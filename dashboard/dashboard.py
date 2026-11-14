@@ -157,38 +157,48 @@ with tab_kat:
 
 # ------------------------------------------------------------------ 2. tren
 with tab_tren:
-    st.subheader("Bagaimana tren order dan revenue bulanan, serta kapan lonjakan tertinggi dan penurunan terbesar?")
+    st.subheader("Bagaimana tren order dan revenue bulanan (MoM), serta bulan apa yang mencatat lonjakan tertinggi dan penurunan terbesar?")
     bln = (df.assign(bulan=df.order_purchase_timestamp.dt.to_period("M").astype(str))
              .groupby("bulan").agg(jumlah_order=("order_id", "nunique"), revenue=("price", "sum")))
     bln["order_mom_pct"] = bln.jumlah_order.pct_change() * 100
+    bln["revenue_mom_pct"] = bln.revenue.pct_change() * 100
+    # Lonjakan persentase dari basis kecil tidak representatif: hanya bulan dengan bulan sebelumnya >= 1.000 order
+    valid = bln.jumlah_order.shift(1) >= 1000
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 7.5), sharex=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(13, 10), sharex=True)
     ax1.plot(bln.index, bln.jumlah_order, marker="o", color=HIGHLIGHT)
     ax1.set_ylabel("Jumlah order"); ax1.set_title("Jumlah order per bulan", loc="left")
-    ax2.bar(bln.index, bln.revenue, color=MUTED)
+    ax2.plot(bln.index, bln.revenue, marker="o", color="#2e8b57")
     ax2.yaxis.set_major_formatter(FuncFormatter(fmt_real))
     ax2.set_title("Revenue per bulan", loc="left")
-    if len(bln) > 1:
-        naik, turun = bln.order_mom_pct.idxmax(), bln.order_mom_pct.idxmin()
-        ax1.annotate(f"Lonjakan {naik}\n{bln.order_mom_pct.max():+.1f}% MoM", (naik, bln.loc[naik, "jumlah_order"]),
-                     xytext=(0, 25), textcoords="offset points", ha="center", color=HIGHLIGHT, fontweight="bold",
-                     arrowprops=dict(arrowstyle="->", color=HIGHLIGHT))
-        ax1.annotate(f"Penurunan {turun}\n{bln.order_mom_pct.min():+.1f}% MoM", (turun, bln.loc[turun, "jumlah_order"]),
-                     xytext=(0, -45), textcoords="offset points", ha="center", color=ALERT, fontweight="bold",
-                     arrowprops=dict(arrowstyle="->", color=ALERT))
-    plt.setp(ax2.get_xticklabels(), rotation=45, ha="right")
+    idx, lebar = np.arange(len(bln)), 0.38
+    ax3.bar(idx - lebar / 2, bln.order_mom_pct.fillna(0), lebar, color=HIGHLIGHT, label="Order")
+    ax3.bar(idx + lebar / 2, bln.revenue_mom_pct.fillna(0), lebar, color="#2e8b57", label="Revenue")
+    ax3.axhline(0, color="black", lw=0.8)
+    ax3.set_xticks(idx); ax3.set_xticklabels(bln.index, rotation=60, ha="right")
+    ax3.set_ylabel("% perubahan"); ax3.legend(frameon=False, ncol=2, loc="upper right")
+    ax3.set_title("Pertumbuhan Month-over-Month: order vs revenue", loc="left")
+    for ax in (ax1, ax2, ax3):
+        ax.grid(axis="x", visible=False)
     sns.despine(); plt.tight_layout()
     st.pyplot(fig)
 
-    if len(bln) > 1:
-        st.info(f"**Insight:** lonjakan order terbesar terjadi pada **{naik}** ({bln.order_mom_pct.max():+.1f}% MoM) "
-                f"dan penurunan terbesar pada **{turun}** ({bln.order_mom_pct.min():+.1f}% MoM).")
+    if valid.any():
+        o_naik, o_turun = bln.order_mom_pct[valid].idxmax(), bln.order_mom_pct[valid].idxmin()
+        r_naik, r_turun = bln.revenue_mom_pct[valid].idxmax(), bln.revenue_mom_pct[valid].idxmin()
+        st.info(f"**Insight:** lonjakan order tertinggi **{o_naik}** ({bln.order_mom_pct[o_naik]:+.1f}% MoM), "
+                f"penurunan order terbesar **{o_turun}** ({bln.order_mom_pct[o_turun]:+.1f}%). "
+                f"Lonjakan revenue tertinggi **{r_naik}** ({bln.revenue_mom_pct[r_naik]:+.1f}%), "
+                f"penurunan revenue terbesar **{r_turun}** ({bln.revenue_mom_pct[r_turun]:+.1f}%). "
+                "Bulan yang bulan sebelumnya berisi kurang dari 1.000 order tidak dihitung karena basisnya terlalu kecil.")
     else:
-        st.info("Pilih rentang minimal 2 bulan untuk melihat perubahan MoM.")
+        st.info("Pilih rentang yang mencakup minimal 2 bulan dengan basis >= 1.000 order untuk melihat perubahan MoM.")
+    with st.expander("Lihat tabel bulanan"):
+        st.dataframe(bln.round(2))
 
 # ------------------------------------------------------------------ 3. state
 with tab_state:
-    st.subheader("State mana yang pengirimannya paling lama/terlambat, dan seberapa besar dampaknya ke review?")
+    st.subheader("State mana yang pengirimannya paling lama/terlambat, dan berapa selisih review order tepat waktu vs terlambat?")
     min_order = st.slider("Minimal jumlah order per state (menghindari state dengan sampel kecil)", 1, 500, 50)
     state = (order_lvl.groupby("customer_state")
                .agg(jumlah_order=("order_id", "nunique"), avg_delivery_days=("delivery_days", "mean"),
@@ -219,7 +229,7 @@ with tab_state:
 
 # ------------------------------------------------------------------ 4. binning
 with tab_bin:
-    st.subheader("Binning: pada lama pengiriman berapa hari kepuasan pelanggan turun tajam?")
+    st.subheader("Binning: bagaimana rata-rata review berubah menurut kelompok lama pengiriman?")
     st.caption("Teknik clustering manual: order dikelompokkan ke interval lama pengiriman dengan `pd.cut`.")
     o = order_lvl.dropna(subset=["delivery_days"]).copy()
     o["kelompok_kirim"] = pd.cut(o.delivery_days, bins=[0, 7, 14, 21, 30, np.inf],
@@ -238,8 +248,11 @@ with tab_bin:
     ax.set_title("Semakin lama pengiriman, semakin rendah review", loc="left")
     ax.grid(axis="x", visible=False); sns.despine(); plt.tight_layout()
     st.pyplot(fig)
-    st.info("**Insight:** review turun perlahan sampai 21 hari, lalu jatuh tajam setelahnya. "
-            "Target operasional: tekan pengiriman di bawah 21 hari.")
+    cepat, lambat = o[o.delivery_days <= 21].review_score.mean(), o[o.delivery_days > 21].review_score.mean()
+    if pd.notna(cepat) and pd.notna(lambat):
+        st.info(f"**Insight:** rata-rata review order yang tiba dalam <= 21 hari adalah **{fmt_dec(cepat)}**, "
+                f"sedangkan order > 21 hari **{fmt_dec(lambat)}** (selisih {fmt_dec(cepat - lambat)} poin). "
+                "Ini hubungan antar kelompok, bukan bukti sebab-akibat.")
     with st.expander("Lihat tabel binning"):
         st.dataframe(bin_df.round(2))
 
@@ -312,11 +325,12 @@ with tab_geo:
             ax.set_xlabel("Longitude"); ax.set_ylabel("Latitude"); ax.set_aspect("equal"); ax.grid(False)
         sns.despine(); plt.tight_layout()
         st.pyplot(fig)
-        st.info("**Insight:** pelanggan terkonsentrasi di Tenggara dan Selatan Brasil. "
-                "State yang jauh dari pusat penjual di SP (Utara/Timur Laut) punya pengiriman paling lama.")
+        st.info("**Insight:** pelanggan terkonsentrasi di Tenggara dan Selatan Brasil. Ukuran bubble menunjukkan revenue "
+                "dan warna menunjukkan rata-rata lama pengiriman per state. Analisis jarak penjual-pelanggan "
+                "(Haversine) ada di notebook.")
 
         with st.expander("Peta interaktif sebaran pelanggan"):
             st.map(pel[["lat", "lng"]].rename(columns={"lng": "lon"}).sample(min(5000, len(pel)), random_state=1))
 
 st.divider()
-st.caption("Proyek Analisis Data - GracePinkkan Ladyna | Sumber data: Olist Brazilian E-Commerce Public Dataset")
+st.caption("Proyek Analisis Data - Grace Pinkkan Ladyna | Sumber data: Olist Brazilian E-Commerce Public Dataset")
